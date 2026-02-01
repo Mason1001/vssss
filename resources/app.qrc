@@ -1,0 +1,12 @@
+<RCC>
+  <qresource prefix="/">
+    <file>resources/icons/dashboard.svg</file>
+    <file>resources/icons/overlay.svg</file>
+    <file>resources/icons/colors.svg</file>
+    <file>resources/icons/detect.svg</file>
+    <file>resources/icons/profiles.svg</file>
+    <file>resources/icons/hotkeys.svg</file>
+    <file>resources/icons/stats.svg</file>
+    <file>resources/icons/system.svg</file>
+  </qresource>
+</RCC>
