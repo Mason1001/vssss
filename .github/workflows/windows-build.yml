@@ -1,0 +1,124 @@
+name: Windows Build (Qt + vcpkg + Portable ZIP)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  APP_NAME: AccessibilityVisionAssistant
+  BUILD_DIR: out/build/win-release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC Dev Cmd
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
+
+      - name: Install Qt (6.6.3, MSVC 2022)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.6.3"
+          host: "windows"
+          target: "desktop"
+          arch: "win64_msvc2019_64"
+          modules: "qt5compat"
+          cache: true
+
+      - name: Setup vcpkg (manifest)
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: "vcpkg.json"
+
+      - name: Configure (CMake)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not $env:QT_ROOT_DIR) { throw "QT_ROOT_DIR not set (Qt install failed)." }
+          if (-not $env:VCPKG_ROOT) { throw "VCPKG_ROOT not set (vcpkg step failed)." }
+
+          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
+          Write-Host "VCPKG_ROOT=$env:VCPKG_ROOT"
+
+          $build = Join-Path $pwd $env:BUILD_DIR
+          New-Item -ItemType Directory -Force $build | Out-Null
+
+          $qt6Dir = Join-Path (Join-Path $env:QT_ROOT_DIR "lib\cmake") "Qt6"
+          $toolchain = Join-Path $env:VCPKG_ROOT "scripts\buildsystems\vcpkg.cmake"
+
+          cmake -S . -B $build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DQt6_DIR="$qt6Dir" `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $pwd $env:BUILD_DIR
+          cmake --build $build
+
+      - name: Package portable ZIP (windeployqt + vcpkg dlls)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $build = Join-Path $pwd $env:BUILD_DIR
+          $dist  = Join-Path $pwd "dist"
+          $appDir = Join-Path $dist $env:APP_NAME
+
+          New-Item -ItemType Directory -Force $appDir | Out-Null
+
+          # Find EXE
+          $exe = Get-ChildItem -Path $build -Recurse -Filter "*.exe" |
+                 Where-Object { $_.Name -ieq "$($env:APP_NAME).exe" -or $_.Name -like "$($env:APP_NAME)*.exe" } |
+                 Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Host "EXE not found. Listing exes under build:"
+            Get-ChildItem -Path $build -Recurse -Filter "*.exe" | Select-Object -First 80 FullName
+            throw "لم يتم العثور على exe داخل مجلد البناء."
+          }
+
+          Copy-Item $exe.FullName (Join-Path $appDir "$($env:APP_NAME).exe") -Force
+
+          # windeployqt
+          $windeploy = Join-Path (Join-Path $env:QT_ROOT_DIR "bin") "windeployqt.exe"
+          if (-not (Test-Path $windeploy)) { throw "windeployqt.exe not found: $windeploy" }
+
+          & $windeploy --release --no-translations --compiler-runtime (Join-Path $appDir "$($env:APP_NAME).exe")
+
+          # Copy resources
+          if (Test-Path "resources") { Copy-Item "resources" (Join-Path $appDir "resources") -Recurse -Force }
+
+          # Copy vcpkg runtime DLLs (OpenCV etc.)
+          $vcpkgBin = Join-Path $pwd "vcpkg_installed\x64-windows\bin"
+          if (Test-Path $vcpkgBin) {
+            Copy-Item (Join-Path $vcpkgBin "*.dll") $appDir -Force -ErrorAction SilentlyContinue
+          }
+
+          # Zip
+          $zipPath = Join-Path $dist "$($env:APP_NAME)-win64.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path $appDir -DestinationPath $zipPath
+
+          Write-Host "ZIP created: $zipPath"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AccessibilityVisionAssistant-win64
+          path: dist/*.zip
